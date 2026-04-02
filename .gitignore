@@ -1,0 +1,18 @@
+# Ignore large video files exceeding GitHub limits
+videos/*.mp4
+videos/*.mov
+videos/*.avi
+
+# Python dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+venv/
+.venv/
+env/
+
+# IDE files
+.vscode/
+.idea/
+.gemini/
