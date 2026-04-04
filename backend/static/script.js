@@ -35,6 +35,10 @@ document.addEventListener("DOMContentLoaded", () => {
         };
     }
 
+    function laneCardId(laneId) {
+        return laneId === "l1" ? "lane1-card" : "lane2-card";
+    }
+
     function updateLights(laneId, color) {
         const tl = document.getElementById(`tl-${laneId}`);
         if (!tl) return;
@@ -49,7 +53,7 @@ document.addEventListener("DOMContentLoaded", () => {
             tl.querySelector(`.${color}`).classList.add('active');
             
             // Add a subtle glow to the lane card based on the active light
-            const card = document.getElementById(`${laneId}-card`);
+            const card = document.getElementById(laneCardId(laneId));
             if (color === 'green') {
                 card.style.boxShadow = '0 0 20px rgba(0, 255, 51, 0.1)';
                 card.style.borderColor = 'rgba(0, 255, 51, 0.3)';
@@ -93,11 +97,26 @@ document.addEventListener("DOMContentLoaded", () => {
             updateLights('l2', data.signals.l2.color);
         }
         
-        // Update Data Stream Log
+        // Update Data Stream (telemetry + optional serial / command log)
         const timestamp = new Date().toISOString().split('T')[1].slice(0, 8);
+        let serialLine = "";
+        if (data.serial) {
+            const s = data.serial;
+            const label = s.arduino_connected ? "HARDWARE" : "MOCK (no USB serial)";
+            serialLine = `<p style="color:${s.arduino_connected ? '#00ffcc' : '#ffaa00'}">[${timestamp}] Arduino: ${label} — ${s.port}</p>`;
+        }
+        const sig = data.signals
+            ? `${data.signals.l1.color.toUpperCase()}_${data.signals.l2.color.toUpperCase()}`
+            : "?";
+        let logBlock = "";
+        if (data.logs && data.logs.length > 0) {
+            logBlock = data.logs.slice(-8).map((log) => `<p class="log-line">${log}</p>`).join("");
+        }
         dataStream.innerHTML = `
+            ${serialLine}
             <p>[${timestamp}] L1_V: ${data.l1_count} | L2_V: ${data.l2_count}</p>
-            <p>[${timestamp}] C_ST: ${data.signals.l1.color.toUpperCase()}_${data.signals.l2.color.toUpperCase()}</p>
+            <p>[${timestamp}] C_ST: ${sig}</p>
+            ${logBlock}
         `;
         
         // Update Mode Badge
@@ -115,13 +134,7 @@ document.addEventListener("DOMContentLoaded", () => {
              }
         }
 
-        // Update Arduino Logs
-        if (data.logs && data.logs.length > 0) {
-            const dataStream = document.getElementById("data-stream");
-            // Reverse so newest is on top or bottom
-            dataStream.innerHTML = data.logs.map(log => `<p>${log}</p>`).join('');
-            dataStream.scrollTop = dataStream.scrollHeight;
-        }
+        dataStream.scrollTop = dataStream.scrollHeight;
     }
 
     // Toggle button handler

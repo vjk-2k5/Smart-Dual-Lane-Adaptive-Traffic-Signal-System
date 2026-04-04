@@ -2,7 +2,7 @@
 videos/*.mp4
 videos/*.mov
 videos/*.avi
-
+*.mp4
 # Python dependencies
 __pycache__/
 *.py[cod]
@@ -11,7 +11,8 @@ __pycache__/
 venv/
 .venv/
 env/
-
+backend/runs/
+carsdataset/
 # IDE files
 .vscode/
 .idea/

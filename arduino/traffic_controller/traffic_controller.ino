@@ -30,16 +30,16 @@ void setup() {
 }
 
 void loop() {
-  if (Serial.available() > 0) {
-    // Read the incoming byte
+  // Drain the buffer so rapid Python writes (e.g. "2\n" then "3\n") all apply
+  while (Serial.available() > 0) {
     char command = Serial.read();
-    
+
     // Command Mapping:
     // '1': L1 Green, L2 Red
     // '2': L1 Yellow, L2 Red
     // '3': L1 Red, L2 Green
     // '4': L1 Red, L2 Yellow
-    
+
     switch (command) {
       case '1':
         setLights(LOW, LOW, HIGH, HIGH, LOW, LOW);
@@ -54,7 +54,7 @@ void loop() {
         setLights(HIGH, LOW, LOW, LOW, HIGH, LOW);
         break;
       default:
-        // Ignore newline or unknown characters
+        // Ignore '\r', '\n', or unknown characters
         break;
     }
   }
