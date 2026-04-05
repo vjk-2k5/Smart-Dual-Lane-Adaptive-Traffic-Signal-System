@@ -176,11 +176,34 @@ class TrafficController:
         self.max_green = 20.0
         self.phase_start_time = time.time()
         self.transition_lock = asyncio.Lock()
+        self.signal_change_reason: str | None = None
 
-    async def update_traffic_logic(self, count_l1: int, count_l2: int):
+    async def update_traffic_logic(
+        self,
+        count_l1: int,
+        count_l2: int,
+        *,
+        ambulance_l1: bool = False,
+        ambulance_l2: bool = False,
+    ):
         async with self.transition_lock:
             if self.current_state not in STEADY_STATES:
                 return
+
+            both_amb = ambulance_l1 and ambulance_l2
+            if not both_amb:
+                if ambulance_l1 and self.current_state == TrafficState.L1_RED_L2_GREEN:
+                    logger.info("[AMBULANCE] Preemption — Lane 1 green (emergency)")
+                    await self._transition_to(
+                        TrafficState.L1_GREEN_L2_RED, reason="ambulance_lane_1"
+                    )
+                    return
+                if ambulance_l2 and self.current_state == TrafficState.L1_GREEN_L2_RED:
+                    logger.info("[AMBULANCE] Preemption — Lane 2 green (emergency)")
+                    await self._transition_to(
+                        TrafficState.L1_RED_L2_GREEN, reason="ambulance_lane_2"
+                    )
+                    return
 
             now = time.time()
             elapsed_green = now - self.phase_start_time
@@ -195,7 +218,7 @@ class TrafficController:
                 )
                 if should_switch:
                     logger.info(f"[SWITCH] L1->L2 | L1={count_l1} L2={count_l2} elapsed={elapsed_green:.1f}s")
-                    await self._transition_to(TrafficState.L1_RED_L2_GREEN)
+                    await self._transition_to(TrafficState.L1_RED_L2_GREEN, reason="traffic_density")
 
             elif self.current_state == TrafficState.L1_RED_L2_GREEN:
                 should_switch = (
@@ -204,9 +227,9 @@ class TrafficController:
                 )
                 if should_switch:
                     logger.info(f"[SWITCH] L2->L1 | L1={count_l1} L2={count_l2} elapsed={elapsed_green:.1f}s")
-                    await self._transition_to(TrafficState.L1_GREEN_L2_RED)
+                    await self._transition_to(TrafficState.L1_GREEN_L2_RED, reason="traffic_density")
 
-    async def _transition_to(self, target_state):
+    async def _transition_to(self, target_state, *, reason: str = "traffic_density"):
         if target_state == TrafficState.L1_RED_L2_GREEN and self.current_state == TrafficState.L1_GREEN_L2_RED:
             self.current_state = TrafficState.L1_RED_L2_RED
             self.serial.write(self.command_map[self.current_state])
@@ -216,6 +239,7 @@ class TrafficController:
             await asyncio.sleep(2.0)
             self.current_state = TrafficState.L1_RED_L2_GREEN
             self.serial.write(self.command_map[self.current_state])
+            self.signal_change_reason = reason
             self.phase_start_time = time.time()
 
         elif target_state == TrafficState.L1_GREEN_L2_RED and self.current_state == TrafficState.L1_RED_L2_GREEN:
@@ -227,6 +251,7 @@ class TrafficController:
             await asyncio.sleep(2.0)
             self.current_state = TrafficState.L1_GREEN_L2_RED
             self.serial.write(self.command_map[self.current_state])
+            self.signal_change_reason = reason
             self.phase_start_time = time.time()
 
     def get_frontend_state(self):
@@ -247,7 +272,11 @@ class TrafficController:
             l1, l2 = "yellow", "red"
         elif s == TrafficState.L1_RED_L2_AMBER:
             l1, l2 = "red", "yellow"
-        return {"l1": {"color": l1}, "l2": {"color": l2}}
+        return {
+            "l1": {"color": l1},
+            "l2": {"color": l2},
+            "last_signal_change_reason": self.signal_change_reason,
+        }
 
     def get_logs(self):
         return self.serial.logs

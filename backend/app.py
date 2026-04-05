@@ -24,20 +24,31 @@ _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 traffic_controller = TrafficController()
 
 logger.info("Loading YOLOv8s Model...")
-model = YOLO('yolov8s.pt')
+model = YOLO('yolov8n.pt')
 VEHICLE_CLASSES = [2, 3, 5, 7]
 
 counts = {"l1": 0, "l2": 0}
 GLOBAL_MODE = "video"  # "video" or "sim"
 
+sim_ambulance = {"l1": False, "l2": False}
+sim_ambulance_count = {"l1": 0, "l2": 0}
+_sim_amb_lock = threading.Lock()
+MAX_SIM_AMBULANCES_PER_LANE = 4
+
 
 class SimCar:
-    def __init__(self, x_lane):
+    def __init__(self, x_lane, is_ambulance: bool = False):
+        self.is_ambulance = is_ambulance
         self.x = x_lane + random.randint(-15, 15)
         self.y = -80
-        self.speed = random.uniform(5.0, 10.0)
-        self.width = 50
-        self.length = 80
+        if is_ambulance:
+            self.speed = random.uniform(9.0, 14.0)
+            self.width = 54
+            self.length = 88
+        else:
+            self.speed = random.uniform(5.0, 10.0)
+            self.width = 50
+            self.length = 80
         self.color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
 
 
@@ -61,6 +72,36 @@ def _encode_jpeg(bgr: np.ndarray) -> bytes:
     if not ok or buf is None:
         ok, buf = cv2.imencode(".jpg", np.zeros((240, 320, 3), dtype=np.uint8))
     return buf.tobytes()
+
+
+def _draw_signal_overlay(bgr: np.ndarray, state: str, lane_id: str) -> None:
+    """Vertical 3-lamp HUD in a fixed corner so each MJPEG lane shows its signal after warp."""
+    w = bgr.shape[1]
+    on = {"red": (0, 0, 255), "yellow": (0, 255, 255), "green": (0, 255, 0)}
+    dim = (45, 45, 52)
+    right_side = lane_id == "l2"
+    margin_x = 14
+    cx = w - margin_x - 12 if right_side else margin_x + 12
+    y0 = 128
+    cv2.rectangle(bgr, (cx - 18, y0 - 36), (cx + 18, y0 + 58), (18, 18, 26), -1)
+    cv2.rectangle(bgr, (cx - 18, y0 - 36), (cx + 18, y0 + 58), (70, 70, 85), 1)
+    label = "L2" if right_side else "L1"
+    cv2.putText(
+        bgr,
+        label,
+        (cx - 12, y0 - 42),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.55,
+        (255, 255, 255),
+        1,
+        cv2.LINE_AA,
+    )
+    for i, key in enumerate(("red", "yellow", "green")):
+        cy = y0 + i * 26
+        col = on[key] if state == key else dim
+        cv2.circle(bgr, (cx, cy), 9, col, -1)
+        if state == key:
+            cv2.circle(bgr, (cx, cy), 9, (255, 255, 255), 1, cv2.LINE_AA)
 
 
 class VideoCamera:
@@ -148,10 +189,18 @@ class VideoCamera:
             )
             cv2.line(image, (220, self.stop_line_y), (420, self.stop_line_y), line_color, 8)
 
-            # Spawn new cars periodically
-            if time.time() - self.last_spawn > random.uniform(0.5, 2.0) and len(self.cars) < 15:
-                new_car = SimCar(self.x_lane)
-                new_car.y = -new_car.length  # start just above screen
+            # Spawn cars + multiple ambulances per lane (preemption in traffic_logic, not count boost)
+            if time.time() - self.last_spawn > random.uniform(0.35, 1.5) and len(self.cars) < 18:
+                amb_on_lane = sum(1 for c in self.cars if getattr(c, "is_ambulance", False))
+                roll = random.random()
+                can_more_amb = amb_on_lane < MAX_SIM_AMBULANCES_PER_LANE
+                is_amb = can_more_amb and (
+                    roll < 0.16
+                    or (amb_on_lane == 0 and roll < 0.32)
+                    or (amb_on_lane == 1 and roll < 0.08)
+                )
+                new_car = SimCar(self.x_lane, is_ambulance=is_amb)
+                new_car.y = -new_car.length
                 self.cars.append(new_car)
                 self.last_spawn = time.time()
 
@@ -204,7 +253,25 @@ class VideoCamera:
 
                 try:
                     if y2 <= 480 and x1 >= 0 and x2 <= 640 and y1 >= 0:
-                        if car_asset is not None:
+                        if getattr(car, "is_ambulance", False):
+                            cv2.rectangle(image, (x1, y1), (x2, y2), (248, 248, 255), -1)
+                            cv2.rectangle(image, (x1 + 5, y1 + 10), (x2 - 5, y2 - 10), (200, 200, 220), -1)
+                            mx = (x1 + x2) // 2
+                            my = (y1 + y2) // 2
+                            cv2.line(image, (mx, y1 + 6), (mx, y2 - 6), (0, 0, 255), 3)
+                            cv2.line(image, (x1 + 6, my), (x2 - 6, my), (0, 0, 255), 3)
+                            cv2.putText(
+                                image,
+                                "AMB",
+                                (x1 + 4, y1 + 22),
+                                cv2.FONT_HERSHEY_SIMPLEX,
+                                0.45,
+                                (0, 0, 200),
+                                1,
+                                cv2.LINE_AA,
+                            )
+                            cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 140, 255), 2)
+                        elif car_asset is not None:
                             car_sprite = cv2.rotate(car_asset, cv2.ROTATE_90_CLOCKWISE)
                             car_sprite = cv2.resize(car_sprite, (car.width, car.length))
 
@@ -219,17 +286,54 @@ class VideoCamera:
                         else:
                             cv2.rectangle(image, (x1, y1), (x2, y2), car.color, -1)
 
-                    cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 255, 0), 2)
+                    if not getattr(car, "is_ambulance", False):
+                        cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 255, 0), 2)
                 except Exception as e:
                     logger.error(f"Error rendering car bounds: {e}")
+
+            amb_count_lane = sum(1 for c in self.cars if getattr(c, "is_ambulance", False))
+            with _sim_amb_lock:
+                sim_ambulance[self.lane_id] = amb_count_lane > 0
+                sim_ambulance_count[self.lane_id] = amb_count_lane
 
             # 3D PERSPECTIVE WARP (ISOMETRIC)
             pts1 = np.float32([[0, 0], [640, 0], [0, 480], [640, 480]])
             pts2 = np.float32([[150, 100], [490, 100], [-100, 480], [740, 480]])
             matrix = cv2.getPerspectiveTransform(pts1, pts2)
             annotated_image = cv2.warpPerspective(image, matrix, (640, 480))
+            _draw_signal_overlay(annotated_image, state, self.lane_id)
+
+            reason = traffic_controller.signal_change_reason
+            if reason and "ambulance" in reason:
+                label = reason.replace("_", " ").upper()
+                cv2.rectangle(annotated_image, (8, 148), (632, 198), (24, 18, 40), -1)
+                cv2.rectangle(annotated_image, (8, 148), (632, 198), (0, 120, 255), 2)
+                cv2.putText(
+                    annotated_image,
+                    "SIGNAL CHANGED FOR EMERGENCY — " + label[:44],
+                    (16, 178),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (200, 230, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            if amb_count_lane > 0:
+                cv2.putText(
+                    annotated_image,
+                    f"Ambulances in this lane: {amb_count_lane}",
+                    (18, 432),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (100, 200, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
 
         else:
+            with _sim_amb_lock:
+                sim_ambulance[self.lane_id] = False
+                sim_ambulance_count[self.lane_id] = 0
             # --- REAL VIDEO MODE ---
             vehicle_count = 0
             annotated_image = None
@@ -300,8 +404,16 @@ def gen_frames(camera: VideoCamera):
 
 async def traffic_worker():
     while True:
-        await traffic_controller.update_traffic_logic(counts["l1"], counts["l2"])
-        await asyncio.sleep(0.5)
+        if GLOBAL_MODE == "sim":
+            with _sim_amb_lock:
+                a1 = sim_ambulance["l1"]
+                a2 = sim_ambulance["l2"]
+        else:
+            a1 = a2 = False
+        await traffic_controller.update_traffic_logic(
+            counts["l1"], counts["l2"], ambulance_l1=a1, ambulance_l2=a2
+        )
+        await asyncio.sleep(0.35)
 
 
 @asynccontextmanager
@@ -360,6 +472,11 @@ async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     try:
         while True:
+            with _sim_amb_lock:
+                amb1 = sim_ambulance["l1"]
+                amb2 = sim_ambulance["l2"]
+                amb_n1 = sim_ambulance_count["l1"]
+                amb_n2 = sim_ambulance_count["l2"]
             payload = {
                 "l1_count": counts["l1"],
                 "l2_count": counts["l2"],
@@ -369,6 +486,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 "mode": GLOBAL_MODE,
                 "logs": traffic_controller.get_logs(),
                 "serial": traffic_controller.get_serial_status(),
+                "ambulance_l1": amb1,
+                "ambulance_l2": amb2,
+                "ambulance_count_l1": amb_n1,
+                "ambulance_count_l2": amb_n2,
             }
             await websocket.send_json(payload)
             await asyncio.sleep(0.2)

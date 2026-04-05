@@ -42,28 +42,33 @@ document.addEventListener("DOMContentLoaded", () => {
     function updateLights(laneId, color) {
         const tl = document.getElementById(`tl-${laneId}`);
         if (!tl) return;
-        
-        // Reset all
-        tl.querySelector('.red').classList.remove('active');
-        tl.querySelector('.yellow').classList.remove('active');
-        tl.querySelector('.green').classList.remove('active');
-        
-        // Set active
-        if (color) {
-            tl.querySelector(`.${color}`).classList.add('active');
-            
-            // Add a subtle glow to the lane card based on the active light
-            const card = document.getElementById(laneCardId(laneId));
-            if (color === 'green') {
-                card.style.boxShadow = '0 0 20px rgba(0, 255, 51, 0.1)';
-                card.style.borderColor = 'rgba(0, 255, 51, 0.3)';
-            } else if (color === 'red') {
-                card.style.boxShadow = '0 0 20px rgba(255, 51, 51, 0.05)';
-                card.style.borderColor = 'rgba(255, 255, 255, 0.08)';
-            } else {
-                card.style.boxShadow = '0 0 20px rgba(255, 204, 0, 0.1)';
-                card.style.borderColor = 'rgba(255, 204, 0, 0.3)';
-            }
+
+        const redEl = tl.querySelector(".light.red");
+        const yellowEl = tl.querySelector(".light.yellow");
+        const greenEl = tl.querySelector(".light.green");
+        if (!redEl || !yellowEl || !greenEl) return;
+
+        const valid = ["red", "yellow", "green"];
+        const c = valid.includes(color) ? color : "red";
+
+        redEl.classList.remove("active");
+        yellowEl.classList.remove("active");
+        greenEl.classList.remove("active");
+        const bulb = tl.querySelector(`.light.${c}`);
+        if (bulb) bulb.classList.add("active");
+
+        const card = document.getElementById(laneCardId(laneId));
+        if (!card) return;
+
+        if (c === "green") {
+            card.style.boxShadow = "0 0 20px rgba(0, 255, 51, 0.1)";
+            card.style.borderColor = "rgba(0, 255, 51, 0.3)";
+        } else if (c === "red") {
+            card.style.boxShadow = "0 0 20px rgba(255, 51, 51, 0.05)";
+            card.style.borderColor = "rgba(255, 255, 255, 0.08)";
+        } else {
+            card.style.boxShadow = "0 0 20px rgba(255, 204, 0, 0.1)";
+            card.style.borderColor = "rgba(255, 204, 0, 0.3)";
         }
     }
 
@@ -91,10 +96,28 @@ document.addEventListener("DOMContentLoaded", () => {
         densityValL2.innerText = `${Math.round(data.l2_density)}%`;
         updateDensityColor(densityBarL2, data.l2_density);
         
-        // Update Lights
+        // Update Lights (support both shapes: signals.l1.color or nested)
         if (data.signals) {
-            updateLights('l1', data.signals.l1.color);
-            updateLights('l2', data.signals.l2.color);
+            const c1 = data.signals.l1 && data.signals.l1.color;
+            const c2 = data.signals.l2 && data.signals.l2.color;
+            if (c1) updateLights("l1", c1);
+            if (c2) updateLights("l2", c2);
+        }
+
+        const card1 = document.getElementById("lane1-card");
+        const card2 = document.getElementById("lane2-card");
+        const ambSim = data.mode === "sim";
+        if (card1) {
+            card1.classList.toggle(
+                "lane-ambulance-priority",
+                ambSim && Boolean(data.ambulance_l1)
+            );
+        }
+        if (card2) {
+            card2.classList.toggle(
+                "lane-ambulance-priority",
+                ambSim && Boolean(data.ambulance_l2)
+            );
         }
         
         // Update Data Stream (telemetry + optional serial / command log)
@@ -105,9 +128,22 @@ document.addEventListener("DOMContentLoaded", () => {
             const label = s.arduino_connected ? "HARDWARE" : "MOCK (no USB serial)";
             serialLine = `<p style="color:${s.arduino_connected ? '#00ffcc' : '#ffaa00'}">[${timestamp}] Arduino: ${label} — ${s.port}</p>`;
         }
-        const sig = data.signals
-            ? `${data.signals.l1.color.toUpperCase()}_${data.signals.l2.color.toUpperCase()}`
-            : "?";
+        let sig = "?";
+        if (data.signals && data.signals.l1 && data.signals.l2) {
+            sig = `${String(data.signals.l1.color).toUpperCase()}_${String(data.signals.l2.color).toUpperCase()}`;
+        }
+        const reason =
+            data.signals && data.signals.last_signal_change_reason
+                ? String(data.signals.last_signal_change_reason)
+                : "";
+        const amb =
+            ambSim && (data.ambulance_l1 || data.ambulance_l2)
+                ? `<p style="color:#ff4499">[${timestamp}] AMB on screen: L1×${data.ambulance_count_l1 ?? 0} L2×${data.ambulance_count_l2 ?? 0}</p>`
+                : "";
+        const reasonLine =
+            ambSim && reason
+                ? `<p style="color:#88eeff">[${timestamp}] LAST_SIGNAL: ${reason}</p>`
+                : "";
         let logBlock = "";
         if (data.logs && data.logs.length > 0) {
             logBlock = data.logs.slice(-8).map((log) => `<p class="log-line">${log}</p>`).join("");
@@ -116,8 +152,35 @@ document.addEventListener("DOMContentLoaded", () => {
             ${serialLine}
             <p>[${timestamp}] L1_V: ${data.l1_count} | L2_V: ${data.l2_count}</p>
             <p>[${timestamp}] C_ST: ${sig}</p>
+            ${amb}
+            ${reasonLine}
             ${logBlock}
         `;
+
+        const banner = document.getElementById("priority-banner");
+        if (banner) {
+            if (ambSim && reason) {
+                banner.hidden = false;
+                if (reason.startsWith("ambulance_lane")) {
+                    const lane = reason.endsWith("1") ? "Lane 1" : "Lane 2";
+                    banner.className = "priority-banner emergency";
+                    banner.textContent =
+                        "Signal updated for emergency: " +
+                        lane +
+                        " was given GREEN (preemption — bypasses normal wait).";
+                } else if (reason === "traffic_density") {
+                    banner.className = "priority-banner normal";
+                    banner.textContent =
+                        "Last change: normal adaptive timing (vehicle counts / max green).";
+                } else {
+                    banner.className = "priority-banner normal";
+                    banner.textContent = "Last change: " + reason.replace(/_/g, " ");
+                }
+            } else {
+                banner.hidden = true;
+                banner.textContent = "";
+            }
+        }
         
         // Update Mode Badge
         if (data.mode) {
