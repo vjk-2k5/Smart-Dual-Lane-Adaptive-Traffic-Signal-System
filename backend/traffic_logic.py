@@ -212,6 +212,10 @@ class TrafficController:
                 return
 
             if self.current_state == TrafficState.L1_GREEN_L2_RED:
+                # Keep Green if an ambulance is still in this lane
+                if ambulance_l1:
+                    return
+
                 should_switch = (
                     (count_l2 > count_l1 and count_l2 > 0)
                     or elapsed_green >= self.max_green
@@ -221,6 +225,10 @@ class TrafficController:
                     await self._transition_to(TrafficState.L1_RED_L2_GREEN, reason="traffic_density")
 
             elif self.current_state == TrafficState.L1_RED_L2_GREEN:
+                # Keep Green if an ambulance is still in this lane
+                if ambulance_l2:
+                    return
+
                 should_switch = (
                     (count_l1 > count_l2 and count_l1 > 0)
                     or elapsed_green >= self.max_green

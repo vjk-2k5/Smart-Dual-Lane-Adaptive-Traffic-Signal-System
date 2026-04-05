@@ -24,7 +24,7 @@ _BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
 traffic_controller = TrafficController()
 
 logger.info("Loading YOLOv8s Model...")
-model = YOLO('yolov8n.pt')
+model = YOLO(os.path.join(_BACKEND_DIR, 'yolov8n.pt'))
 VEHICLE_CLASSES = [2, 3, 5, 7]
 
 counts = {"l1": 0, "l2": 0}
@@ -37,9 +37,11 @@ MAX_SIM_AMBULANCES_PER_LANE = 4
 
 
 class SimCar:
-    def __init__(self, x_lane, is_ambulance: bool = False):
+    def __init__(self, sub_lane: int, is_ambulance: bool = False):
         self.is_ambulance = is_ambulance
-        self.x = x_lane + random.randint(-15, 15)
+        self.sub_lane = sub_lane
+        # 3 lanes: 0 (left), 1 (center), 2 (right)
+        self.x = 250 + (sub_lane * 70) + random.randint(-4, 4)
         self.y = -80
         if is_ambulance:
             self.speed = random.uniform(9.0, 14.0)
@@ -190,16 +192,14 @@ class VideoCamera:
             cv2.line(image, (220, self.stop_line_y), (420, self.stop_line_y), line_color, 8)
 
             # Spawn cars + multiple ambulances per lane (preemption in traffic_logic, not count boost)
-            if time.time() - self.last_spawn > random.uniform(0.35, 1.5) and len(self.cars) < 18:
+            if time.time() - self.last_spawn > random.uniform(0.2, 1.0) and len(self.cars) < 24:
                 amb_on_lane = sum(1 for c in self.cars if getattr(c, "is_ambulance", False))
                 roll = random.random()
                 can_more_amb = amb_on_lane < MAX_SIM_AMBULANCES_PER_LANE
-                is_amb = can_more_amb and (
-                    roll < 0.16
-                    or (amb_on_lane == 0 and roll < 0.32)
-                    or (amb_on_lane == 1 and roll < 0.08)
-                )
-                new_car = SimCar(self.x_lane, is_ambulance=is_amb)
+                # Drastically reduce frequency: max 1 ambulance, 3% chance
+                is_amb = can_more_amb and (amb_on_lane == 0) and (roll < 0.03)
+                sub_lane = random.choice([0, 1, 2])
+                new_car = SimCar(sub_lane, is_ambulance=is_amb)
                 new_car.y = -new_car.length
                 self.cars.append(new_car)
                 self.last_spawn = time.time()
@@ -210,23 +210,26 @@ class VideoCamera:
 
             for i, car in enumerate(self.cars):
                 # Compute the maximum Y the front of this car can reach
-                # Front of car = car.y + car.length
                 max_front_y = self.stop_line_y  # default: stop line
 
-                # Check the car directly ahead (lower index = further down = ahead)
-                if i > 0:
-                    car_ahead = self.cars[i - 1]
+                # Find the car directly ahead in the SAME sub_lane
+                car_ahead = None
+                for j in range(i - 1, -1, -1):
+                    if getattr(self.cars[j], "sub_lane", 1) == getattr(car, "sub_lane", 1):
+                        car_ahead = self.cars[j]
+                        break
+
+                if car_ahead is not None:
                     # This car must stop before it hits the rear of the car ahead
                     gap = 10  # pixels gap between cars
                     max_front_y = min(max_front_y, car_ahead.y - gap)
 
-                # Only obey stop line when red or yellow
-                if state in ["red", "yellow"]:
+                # Only obey stop line when red or yellow AND car hasn't crossed it yet
+                if state in ["red", "yellow"] and (car.y + car.length <= self.stop_line_y + 5):
                     max_front_y = min(max_front_y, self.stop_line_y)
                 else:
                     # Green: no stop-line constraint, only car-ahead constraint
-                    if i > 0:
-                        car_ahead = self.cars[i - 1]
+                    if car_ahead is not None:
                         max_front_y = car_ahead.y - gap
                     else:
                         max_front_y = 9999  # lead car drives freely on green
@@ -241,10 +244,8 @@ class VideoCamera:
             # Remove cars that have driven off screen
             self.cars = [c for c in self.cars if c.y < 480]
 
-            # --- FIX: Count ALL cars on screen, not just waiting cars.
-            #     This gives the traffic controller a stable non-zero count
-            #     so it can compare lane densities properly. ---
-            vehicle_count = len(self.cars)
+            # --- FIX: Only count cars visibly in the frame (y > -20) and before the stop line
+            vehicle_count = sum(1 for c in self.cars if -20 < c.y < self.stop_line_y + 20)
 
             # Render cars
             for car in self.cars:
@@ -291,10 +292,11 @@ class VideoCamera:
                 except Exception as e:
                     logger.error(f"Error rendering car bounds: {e}")
 
-            amb_count_lane = sum(1 for c in self.cars if getattr(c, "is_ambulance", False))
+            # Only flag as ambulance if it's visible in frame (y > 0) and hasn't fully cleared yet (stop_line_y + 80)
+            amb_at_line = sum(1 for c in self.cars if getattr(c, "is_ambulance", False) and 0 < c.y < self.stop_line_y + 80)
             with _sim_amb_lock:
-                sim_ambulance[self.lane_id] = amb_count_lane > 0
-                sim_ambulance_count[self.lane_id] = amb_count_lane
+                sim_ambulance[self.lane_id] = amb_at_line > 0
+                sim_ambulance_count[self.lane_id] = amb_at_line
 
             # 3D PERSPECTIVE WARP (ISOMETRIC)
             pts1 = np.float32([[0, 0], [640, 0], [0, 480], [640, 480]])
@@ -318,10 +320,10 @@ class VideoCamera:
                     2,
                     cv2.LINE_AA,
                 )
-            if amb_count_lane > 0:
+            if amb_at_line > 0:
                 cv2.putText(
                     annotated_image,
-                    f"Ambulances in this lane: {amb_count_lane}",
+                    f"Ambulances in this lane: {amb_at_line}",
                     (18, 432),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.55,
@@ -428,8 +430,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
-app.mount("/static", StaticFiles(directory="static"), name="static")
-templates = Jinja2Templates(directory="templates")
+app.mount("/static", StaticFiles(directory=os.path.join(_BACKEND_DIR, "static")), name="static")
+templates = Jinja2Templates(directory=os.path.join(_BACKEND_DIR, "templates"))
 
 
 @app.get("/")
