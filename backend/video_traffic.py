@@ -41,6 +41,9 @@ L1_GREEN = 1
 L1_YELLOW = 2
 L2_GREEN = 3
 L2_YELLOW = 4
+ALL_RED = 7
+L1_AMBER_ONLY = 5
+L2_AMBER_ONLY = 6
 
 current_state = L1_GREEN
 last_switch_time = time.time()
@@ -51,8 +54,12 @@ def send_command(cmd):
         ser.write(f"{cmd}\n".encode())
     print(f"➡ Sent to Arduino: {cmd}")
 
-# Initial state
-send_command(current_state)
+# Boot: all red -> amber only (L1) -> green
+send_command(ALL_RED)
+time.sleep(1.5)
+send_command(L1_AMBER_ONLY)
+time.sleep(2)
+send_command(L1_GREEN)
 
 # -------------------- COUNT VEHICLES --------------------
 def count_vehicles(frame):
@@ -90,8 +97,10 @@ while True:
 
     if current_state == L1_GREEN:
         if elapsed > MIN_GREEN and (count_l2 > count_l1 or elapsed > MAX_GREEN):
-            send_command(L1_YELLOW)
-            time.sleep(3)
+            send_command(ALL_RED)
+            time.sleep(1.5)
+            send_command(L2_AMBER_ONLY)
+            time.sleep(2)
 
             current_state = L2_GREEN
             send_command(L2_GREEN)
@@ -99,8 +108,10 @@ while True:
 
     elif current_state == L2_GREEN:
         if elapsed > MIN_GREEN and (count_l1 > count_l2 or elapsed > MAX_GREEN):
-            send_command(L2_YELLOW)
-            time.sleep(3)
+            send_command(ALL_RED)
+            time.sleep(1.5)
+            send_command(L1_AMBER_ONLY)
+            time.sleep(2)
 
             current_state = L1_GREEN
             send_command(L1_GREEN)

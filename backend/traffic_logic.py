@@ -20,6 +20,14 @@ class TrafficState:
     L1_YELLOW_L2_RED = "L1_Y_L2_R"
     L1_RED_L2_GREEN = "L1_R_L2_G"
     L1_RED_L2_YELLOW = "L1_R_L2_Y"
+    L1_RED_L2_RED = "L1_R_L2_R"
+    L1_AMBER_L2_RED = "L1_A_L2_R"
+    L1_RED_L2_AMBER = "L1_R_L2_A"
+
+
+STEADY_STATES = frozenset(
+    {TrafficState.L1_GREEN_L2_RED, TrafficState.L1_RED_L2_GREEN}
+)
 
 
 # ─────────────────────────────────────────────
@@ -145,16 +153,23 @@ class TrafficController:
         # --- Automatically uses real Arduino if available, mock otherwise ---
         self.serial = create_serial(ARDUINO_PORT, ARDUINO_BAUD)
 
-        # Single-byte commands + newline (Arduino reads per byte; '\n' is ignored in sketch)
+        # 5/6 = amber only (prepare); 0/7 = all red; 1–4 = green / legacy yellow same as amber-only.
         self.command_map = {
             TrafficState.L1_GREEN_L2_RED:   b"1\n",
             TrafficState.L1_YELLOW_L2_RED:  b"2\n",
             TrafficState.L1_RED_L2_GREEN:   b"3\n",
             TrafficState.L1_RED_L2_YELLOW:  b"4\n",
+            TrafficState.L1_RED_L2_RED:     b"7\n",
+            TrafficState.L1_AMBER_L2_RED:   b"5\n",
+            TrafficState.L1_RED_L2_AMBER:   b"6\n",
         }
 
-        # Send initial state after a short delay so the bootloader is fully done
+        # Boot: all red -> amber only (L1) -> green (L1)
         time.sleep(0.15)
+        self.serial.write(self.command_map[TrafficState.L1_RED_L2_RED])
+        time.sleep(1.5)
+        self.serial.write(self.command_map[TrafficState.L1_AMBER_L2_RED])
+        time.sleep(2.0)
         self.serial.write(self.command_map[self.current_state])
 
         self.min_green = 5.0
@@ -164,7 +179,7 @@ class TrafficController:
 
     async def update_traffic_logic(self, count_l1: int, count_l2: int):
         async with self.transition_lock:
-            if self.current_state in [TrafficState.L1_YELLOW_L2_RED, TrafficState.L1_RED_L2_YELLOW]:
+            if self.current_state not in STEADY_STATES:
                 return
 
             now = time.time()
@@ -193,38 +208,46 @@ class TrafficController:
 
     async def _transition_to(self, target_state):
         if target_state == TrafficState.L1_RED_L2_GREEN and self.current_state == TrafficState.L1_GREEN_L2_RED:
-            self.current_state = TrafficState.L1_YELLOW_L2_RED
+            self.current_state = TrafficState.L1_RED_L2_RED
             self.serial.write(self.command_map[self.current_state])
-            await asyncio.sleep(3)
+            await asyncio.sleep(1.5)
+            self.current_state = TrafficState.L1_RED_L2_AMBER
+            self.serial.write(self.command_map[self.current_state])
+            await asyncio.sleep(2.0)
             self.current_state = TrafficState.L1_RED_L2_GREEN
             self.serial.write(self.command_map[self.current_state])
             self.phase_start_time = time.time()
 
         elif target_state == TrafficState.L1_GREEN_L2_RED and self.current_state == TrafficState.L1_RED_L2_GREEN:
-            self.current_state = TrafficState.L1_RED_L2_YELLOW
+            self.current_state = TrafficState.L1_RED_L2_RED
             self.serial.write(self.command_map[self.current_state])
-            await asyncio.sleep(3)
+            await asyncio.sleep(1.5)
+            self.current_state = TrafficState.L1_AMBER_L2_RED
+            self.serial.write(self.command_map[self.current_state])
+            await asyncio.sleep(2.0)
             self.current_state = TrafficState.L1_GREEN_L2_RED
             self.serial.write(self.command_map[self.current_state])
             self.phase_start_time = time.time()
 
     def get_frontend_state(self):
-        return {
-            "l1": {
-                "color": (
-                    "green"  if self.current_state == TrafficState.L1_GREEN_L2_RED  else
-                    "yellow" if self.current_state == TrafficState.L1_YELLOW_L2_RED else
-                    "red"
-                )
-            },
-            "l2": {
-                "color": (
-                    "green"  if self.current_state == TrafficState.L1_RED_L2_GREEN  else
-                    "yellow" if self.current_state == TrafficState.L1_RED_L2_YELLOW else
-                    "red"
-                )
-            }
-        }
+        s = self.current_state
+        l1 = "red"
+        l2 = "red"
+        if s == TrafficState.L1_GREEN_L2_RED:
+            l1, l2 = "green", "red"
+        elif s == TrafficState.L1_YELLOW_L2_RED:
+            l1, l2 = "yellow", "red"
+        elif s == TrafficState.L1_RED_L2_GREEN:
+            l1, l2 = "red", "green"
+        elif s == TrafficState.L1_RED_L2_YELLOW:
+            l1, l2 = "red", "yellow"
+        elif s == TrafficState.L1_RED_L2_RED:
+            l1, l2 = "red", "red"
+        elif s == TrafficState.L1_AMBER_L2_RED:
+            l1, l2 = "yellow", "red"
+        elif s == TrafficState.L1_RED_L2_AMBER:
+            l1, l2 = "red", "yellow"
+        return {"l1": {"color": l1}, "l2": {"color": l2}}
 
     def get_logs(self):
         return self.serial.logs

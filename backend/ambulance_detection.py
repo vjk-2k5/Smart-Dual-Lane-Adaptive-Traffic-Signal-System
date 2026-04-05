@@ -143,7 +143,7 @@ try:
                         cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
             print(f"[{frame_count:05d}] Ambulance LANE 1 -> GREEN")
         elif amb2:
-            send_command(b'2')
+            send_command(b'3')
             cv2.putText(frame2, "PRIORITY: LANE 2", (20, 50),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
             print(f"[{frame_count:05d}] Ambulance LANE 2 -> GREEN")
