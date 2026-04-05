@@ -35,6 +35,8 @@ sim_ambulance_count = {"l1": 0, "l2": 0}
 _sim_amb_lock = threading.Lock()
 MAX_SIM_AMBULANCES_PER_LANE = 4
 
+SIM_SPAWN_INTENSITY = {"l1": 5, "l2": 5} # 1 to 10
+SIM_FORCE_AMBULANCE = {"l1": False, "l2": False}
 
 class SimCar:
     def __init__(self, sub_lane: int, is_ambulance: bool = False):
@@ -52,21 +54,27 @@ class SimCar:
             self.width = 50
             self.length = 80
         self.color = (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))
+        self.asset_idx = random.randint(0, 2)
 
 
 # Load graphical assets for the pixelated simulator (anchored to this package)
 road_asset_og = cv2.imread(os.path.join(_BACKEND_DIR, "assets", "road.png"))
-car_asset_og = cv2.imread(os.path.join(_BACKEND_DIR, "assets", "car.png"))
-
 if road_asset_og is not None:
     road_asset = cv2.resize(road_asset_og, (640, 480))
 else:
     road_asset = None
 
-if car_asset_og is not None:
-    car_asset = cv2.resize(car_asset_og, (50, 80))
+car_assets = []
+for car_file in ["car1.png", "car2.png", "car3.png"]:
+    img = cv2.imread(os.path.join(_BACKEND_DIR, "assets", car_file))
+    if img is not None:
+        car_assets.append(cv2.resize(img, (50, 80)))
+
+amb_asset_og = cv2.imread(os.path.join(_BACKEND_DIR, "assets", "ambulence.png"))
+if amb_asset_og is not None:
+    amb_asset = cv2.resize(amb_asset_og, (54, 88))
 else:
-    car_asset = None
+    amb_asset = None
 
 
 def _encode_jpeg(bgr: np.ndarray) -> bytes:
@@ -191,13 +199,24 @@ class VideoCamera:
             )
             cv2.line(image, (220, self.stop_line_y), (420, self.stop_line_y), line_color, 8)
 
+            intensity = SIM_SPAWN_INTENSITY[self.lane_id]
+            # Use an inverse curve so intensity 1 is very slow (4.5s average), and 10 is very fast (0.45s average)
+            base_interval = 4.5 / max(1, intensity)
+            
             # Spawn cars + multiple ambulances per lane (preemption in traffic_logic, not count boost)
-            if time.time() - self.last_spawn > random.uniform(0.2, 1.0) and len(self.cars) < 24:
+            if time.time() - self.last_spawn > random.uniform(base_interval * 0.4, base_interval * 1.6) and len(self.cars) < 24:
                 amb_on_lane = sum(1 for c in self.cars if getattr(c, "is_ambulance", False))
                 roll = random.random()
                 can_more_amb = amb_on_lane < MAX_SIM_AMBULANCES_PER_LANE
-                # Drastically reduce frequency: max 1 ambulance, 3% chance
-                is_amb = can_more_amb and (amb_on_lane == 0) and (roll < 0.03)
+                
+                is_amb = False
+                if SIM_FORCE_AMBULANCE[self.lane_id]:
+                    is_amb = True
+                    SIM_FORCE_AMBULANCE[self.lane_id] = False
+                else:
+                    # Drastically reduce automatic frequency: max 1 ambulance, 1% chance
+                    is_amb = can_more_amb and (amb_on_lane == 0) and (roll < 0.01)
+
                 sub_lane = random.choice([0, 1, 2])
                 new_car = SimCar(sub_lane, is_ambulance=is_amb)
                 new_car.y = -new_car.length
@@ -254,38 +273,32 @@ class VideoCamera:
 
                 try:
                     if y2 <= 480 and x1 >= 0 and x2 <= 640 and y1 >= 0:
-                        if getattr(car, "is_ambulance", False):
-                            cv2.rectangle(image, (x1, y1), (x2, y2), (248, 248, 255), -1)
-                            cv2.rectangle(image, (x1 + 5, y1 + 10), (x2 - 5, y2 - 10), (200, 200, 220), -1)
-                            mx = (x1 + x2) // 2
-                            my = (y1 + y2) // 2
-                            cv2.line(image, (mx, y1 + 6), (mx, y2 - 6), (0, 0, 255), 3)
-                            cv2.line(image, (x1 + 6, my), (x2 - 6, my), (0, 0, 255), 3)
-                            cv2.putText(
-                                image,
-                                "AMB",
-                                (x1 + 4, y1 + 22),
-                                cv2.FONT_HERSHEY_SIMPLEX,
-                                0.45,
-                                (0, 0, 200),
-                                1,
-                                cv2.LINE_AA,
-                            )
-                            cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 140, 255), 2)
-                        elif car_asset is not None:
-                            car_sprite = cv2.rotate(car_asset, cv2.ROTATE_90_CLOCKWISE)
-                            car_sprite = cv2.resize(car_sprite, (car.width, car.length))
+                        is_amb = getattr(car, "is_ambulance", False)
+                        sprite_to_use = None
+                        
+                        if is_amb and amb_asset is not None:
+                            sprite_to_use = amb_asset
+                        elif not is_amb and car_assets:
+                            sprite_to_use = car_assets[getattr(car, "asset_idx", 0) % len(car_assets)]
 
+                        if sprite_to_use is not None:
+                            sprite_to_use = cv2.resize(sprite_to_use, (car.width, car.length))
                             roi = image[y1:y2, x1:x2]
-                            gray = cv2.cvtColor(car_sprite, cv2.COLOR_BGR2GRAY)
+                            gray = cv2.cvtColor(sprite_to_use, cv2.COLOR_BGR2GRAY)
                             _, mask = cv2.threshold(gray, 10, 255, cv2.THRESH_BINARY)
                             mask_inv = cv2.bitwise_not(mask)
 
                             bg = cv2.bitwise_and(roi, roi, mask=mask_inv)
-                            fg = cv2.bitwise_and(car_sprite, car_sprite, mask=mask)
+                            fg = cv2.bitwise_and(sprite_to_use, sprite_to_use, mask=mask)
                             image[y1:y2, x1:x2] = cv2.add(bg, fg)
+                            
+                            if is_amb:
+                                cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 140, 255), 2)
                         else:
-                            cv2.rectangle(image, (x1, y1), (x2, y2), car.color, -1)
+                            # Fallback if no assets
+                            cv2.rectangle(image, (x1, y1), (x2, y2), (255, 255, 255) if is_amb else car.color, -1)
+                            if is_amb:
+                                cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 140, 255), 2)
 
                     if not getattr(car, "is_ambulance", False):
                         cv2.rectangle(image, (x1 - 5, y1 - 5), (x2 + 5, y2 + 5), (0, 255, 0), 2)
@@ -437,6 +450,23 @@ templates = Jinja2Templates(directory=os.path.join(_BACKEND_DIR, "templates"))
 @app.get("/")
 async def index(request: Request):
     return templates.TemplateResponse(request=request, name="index.html")
+
+
+@app.post("/api/sim_controls")
+async def sim_controls(request: Request):
+    data = await request.json()
+    lane = data.get("lane")
+    intensity = data.get("intensity")
+    force_amb = data.get("spawn_ambulance", False)
+    
+    if lane in ["l1", "l2"]:
+        if intensity is not None:
+            SIM_SPAWN_INTENSITY[lane] = int(intensity)
+            logger.info(f"Lane {lane} spawn intensity set to {intensity}")
+        if force_amb:
+            SIM_FORCE_AMBULANCE[lane] = True
+            logger.info(f"Lane {lane} manual ambulance triggered")
+    return {"status": "success"}
 
 
 @app.get("/api/toggle_mode")

@@ -54,8 +54,16 @@
                         <span class="density-val" id="density-val-l1">0%</span>
                     </div>
                 </div>
-            </section>
 
+                <!-- Simulator Controls -->
+                <div class="sim-controls">
+                    <div class="control-row">
+                        <span class="label">Traffic Intensity: <span id="intensity-val-l1" style="color:var(--primary); font-weight:bold;">5</span></span>
+                        <input type="range" class="control-slider" id="intensity-l1" min="1" max="10" value="5" onchange="window.updateIntensity('l1', this.value)">
+                    </div>
+                    <button class="glow-btn danger-btn" onclick="window.spawnAmbulance('l1')">EMERGENCY SPAWN: AMBULANCE</button>
+                </div>
+            </section>
             <!-- Status Indicator Panel -->
             <section class="center-panel">
                 <div class="vs-badge">VS</div>
@@ -106,6 +114,15 @@
                         </div>
                         <span class="density-val" id="density-val-l2">0%</span>
                     </div>
+                </div>
+
+                <!-- Simulator Controls -->
+                <div class="sim-controls">
+                    <div class="control-row">
+                        <span class="label">Traffic Intensity: <span id="intensity-val-l2" style="color:var(--primary); font-weight:bold;">5</span></span>
+                        <input type="range" class="control-slider" id="intensity-l2" min="1" max="10" value="5" onchange="window.updateIntensity('l2', this.value)">
+                    </div>
+                    <button class="glow-btn danger-btn" onclick="window.spawnAmbulance('l2')">EMERGENCY SPAWN: AMBULANCE</button>
                 </div>
             </section>
 

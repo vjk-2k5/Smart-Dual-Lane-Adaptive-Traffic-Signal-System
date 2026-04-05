@@ -213,3 +213,21 @@ document.addEventListener("DOMContentLoaded", () => {
     // Start simulation clock
     connectDataStream();
 });
+
+// Expose control functions to global scope
+window.updateIntensity = function(lane, value) {
+    document.getElementById(`intensity-val-${lane}`).innerText = value;
+    fetch('/api/sim_controls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lane: lane, intensity: value })
+    }).catch(err => console.error("Sim control error:", err));
+};
+
+window.spawnAmbulance = function(lane) {
+    fetch('/api/sim_controls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lane: lane, spawn_ambulance: true })
+    }).catch(err => console.error("Sim control error:", err));
+};
