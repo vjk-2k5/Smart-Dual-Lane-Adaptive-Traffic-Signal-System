@@ -77,6 +77,22 @@
                         <button id="toggle-mode-btn" class="glow-btn">SWITCH TO PIXEL SIMULATOR</button>
                     </div>
 
+                    <!-- Pedestrian Crosswalk Control -->
+                    <div class="ped-panel" id="ped-panel">
+                        <div class="ped-header">
+                            <span>🚶 Pedestrians Waiting</span>
+                            <span id="ped-count-label" class="ped-count">0 / 10</span>
+                        </div>
+                        <div class="progress-bar" style="margin:0.5rem 0;">
+                            <div class="progress" id="ped-bar" style="width:0%; background: linear-gradient(90deg,#00ffcc,#00b3ff);"></div>
+                        </div>
+                        <p id="ped-status" style="font-size:0.75rem;color:var(--text-muted);margin-bottom:0.5rem;">Auto-accumulating every 3s</p>
+                        <div style="display:flex;gap:0.4rem;">
+                            <button class="glow-btn" style="flex:1;font-size:0.7rem;" onclick="window.pedAdd()">+ ADD ONE</button>
+                            <button class="glow-btn danger-btn" style="flex:1;font-size:0.7rem;" onclick="window.pedTrigger()">🚦 FORCE CROSS</button>
+                        </div>
+                    </div>
+
                     <div class="data-stream" id="data-stream">
                         <p>Awaiting connect...</p>
                     </div>

@@ -41,6 +41,16 @@ SIM_SPAWN_INTENSITY = {"l1": 5, "l2": 5} # 1 to 10
 SIM_FORCE_AMBULANCE = {"l1": False, "l2": False}
 SIM_FORCE_FIRETRUCK = {"l1": False, "l2": False}
 
+# Pedestrian crossing state
+PEDESTRIAN_COUNT = 0                  # pedestrians waiting to cross
+PEDESTRIAN_THRESHOLD = 10             # triggers crossing when reached
+PEDESTRIAN_ACCUMULATE_INTERVAL = 3.0  # seconds between auto-adding a pedestrian
+PEDESTRIAN_DRAIN_RATE = 3             # pedestrians cleared per second while crossing
+PEDESTRIAN_TRIGGER = False            # set True by API or threshold to fire once
+_ped_lock = threading.Lock()
+_last_ped_accumulate = time.time()
+_ped_drain_per_interval = 1           # how many pedestrians cross per interval
+
 class SimCar:
     def __init__(self, sub_lane: int, is_ambulance: bool = False, is_firetruck: bool = False):
         self.is_ambulance = is_ambulance
@@ -448,29 +458,73 @@ def gen_frames(camera: VideoCamera):
         time.sleep(0.04)
 
 
+async def pedestrian_worker():
+    """Independent task: manages pedestrian count separately from the traffic worker.
+    - When NOT crossing: accumulate 1 pedestrian every PEDESTRIAN_ACCUMULATE_INTERVAL seconds.
+    - When crossing (both lanes red): drain PEDESTRIAN_DRAIN_RATE pedestrians per second.
+    - When count hits threshold: set PEDESTRIAN_TRIGGER once.
+    """
+    global PEDESTRIAN_COUNT, PEDESTRIAN_TRIGGER
+    _accum_ticks = 0
+    while True:
+        await asyncio.sleep(1.0)  # 1-second base tick
+        if GLOBAL_MODE != "sim":
+            continue
+        is_crossing = traffic_controller._pedestrian_phase_active
+        with _ped_lock:
+            if is_crossing:
+                # Drain fast — 3 people cross per second
+                PEDESTRIAN_COUNT = max(0, PEDESTRIAN_COUNT - PEDESTRIAN_DRAIN_RATE)
+            else:
+                # Accumulate slower — 1 person every PEDESTRIAN_ACCUMULATE_INTERVAL seconds
+                _accum_ticks += 1
+                if _accum_ticks >= int(PEDESTRIAN_ACCUMULATE_INTERVAL):
+                    _accum_ticks = 0
+                    PEDESTRIAN_COUNT = min(PEDESTRIAN_THRESHOLD, PEDESTRIAN_COUNT + 1)
+                    if PEDESTRIAN_COUNT >= PEDESTRIAN_THRESHOLD and not PEDESTRIAN_TRIGGER:
+                        PEDESTRIAN_TRIGGER = True
+                        logger.info("[PEDESTRIAN] Threshold reached — triggering crossing")
+
+
 async def traffic_worker():
+    global PEDESTRIAN_TRIGGER
     while True:
         if GLOBAL_MODE == "sim":
             with _sim_amb_lock:
                 a1 = sim_ambulance["l1"] or sim_firetruck["l1"]
                 a2 = sim_ambulance["l2"] or sim_firetruck["l2"]
+            with _ped_lock:
+                fire = PEDESTRIAN_TRIGGER
         else:
             a1 = a2 = False
+            fire = False
+
         await traffic_controller.update_traffic_logic(
-            counts["l1"], counts["l2"], ambulance_l1=a1, ambulance_l2=a2
+            counts["l1"], counts["l2"],
+            ambulance_l1=a1, ambulance_l2=a2,
+            pedestrian_crossing=fire,
         )
+
+        # Clear the trigger after it has been consumed
+        if fire:
+            with _ped_lock:
+                PEDESTRIAN_TRIGGER = False
+
         await asyncio.sleep(0.35)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = asyncio.create_task(traffic_worker())
+    t1 = asyncio.create_task(traffic_worker())
+    t2 = asyncio.create_task(pedestrian_worker())
     yield
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        pass
+    t1.cancel()
+    t2.cancel()
+    for t in [t1, t2]:
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(lifespan=lifespan)
@@ -502,6 +556,31 @@ async def sim_controls(request: Request):
             SIM_FORCE_FIRETRUCK[lane] = True
             logger.info(f"Lane {lane} manual firetruck triggered")
     return {"status": "success"}
+
+
+@app.post("/api/pedestrian_crossing")
+async def pedestrian_crossing_endpoint(request: Request):
+    global PEDESTRIAN_TRIGGER, PEDESTRIAN_COUNT
+    data = await request.json()
+    action = data.get("action", "trigger")  # "trigger" or "add"
+    threshold = data.get("threshold")       # optional: change threshold
+
+    if threshold is not None:
+        global PEDESTRIAN_THRESHOLD
+        PEDESTRIAN_THRESHOLD = max(1, int(threshold))
+        logger.info(f"[PEDESTRIAN] Threshold changed to {PEDESTRIAN_THRESHOLD}")
+
+    with _ped_lock:
+        if action == "trigger":
+            PEDESTRIAN_TRIGGER = True
+            PEDESTRIAN_COUNT = PEDESTRIAN_THRESHOLD
+            logger.info("[PEDESTRIAN] Manual crossing triggered")
+        elif action == "add":
+            PEDESTRIAN_COUNT = min(PEDESTRIAN_THRESHOLD, PEDESTRIAN_COUNT + 1)
+            if PEDESTRIAN_COUNT >= PEDESTRIAN_THRESHOLD:
+                PEDESTRIAN_TRIGGER = True
+
+    return {"status": "success", "pedestrian_count": PEDESTRIAN_COUNT}
 
 
 @app.get("/api/toggle_mode")
@@ -548,6 +627,10 @@ async def websocket_endpoint(websocket: WebSocket):
                 ft2  = sim_firetruck["l2"]
                 ft_n1 = sim_firetruck_count["l1"]
                 ft_n2 = sim_firetruck_count["l2"]
+            with _ped_lock:
+                ped_count = PEDESTRIAN_COUNT
+                ped_threshold = PEDESTRIAN_THRESHOLD
+                ped_phase = traffic_controller._pedestrian_phase_active
             payload = {
                 "l1_count": counts["l1"],
                 "l2_count": counts["l2"],
@@ -565,6 +648,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 "firetruck_l2": ft2,
                 "firetruck_count_l1": ft_n1,
                 "firetruck_count_l2": ft_n2,
+                "pedestrian_count": ped_count,
+                "pedestrian_threshold": ped_threshold,
+                "pedestrian_phase_active": ped_phase,
             }
             await websocket.send_json(payload)
             await asyncio.sleep(0.2)

@@ -29,6 +29,10 @@ STEADY_STATES = frozenset(
     {TrafficState.L1_GREEN_L2_RED, TrafficState.L1_RED_L2_GREEN}
 )
 
+# State the system returns to after a pedestrian phase
+PEDESTRIAN_CROSSING_STATE = TrafficState.L1_RED_L2_RED
+PEDESTRIAN_HOLD_SECONDS = 8.0   # how long both lanes stay red for crossing
+
 
 # ─────────────────────────────────────────────
 # CONFIGURATION — TRAFFIC_ARDUINO_PORT or ARDUINO_PORT env overrides default
@@ -177,6 +181,8 @@ class TrafficController:
         self.phase_start_time = time.time()
         self.transition_lock = asyncio.Lock()
         self.signal_change_reason: str | None = None
+        self._pedestrian_phase_active = False
+        self._pre_pedestrian_state = TrafficState.L1_GREEN_L2_RED
 
     async def update_traffic_logic(
         self,
@@ -185,8 +191,15 @@ class TrafficController:
         *,
         ambulance_l1: bool = False,
         ambulance_l2: bool = False,
+        pedestrian_crossing: bool = False,
     ):
         async with self.transition_lock:
+            # ── Pedestrian crossing request ──────────────────────────────────
+            if pedestrian_crossing and not self._pedestrian_phase_active:
+                if self.current_state in STEADY_STATES:
+                    await self._do_pedestrian_crossing()
+                    return
+
             if self.current_state not in STEADY_STATES:
                 return
 
@@ -236,6 +249,36 @@ class TrafficController:
                 if should_switch:
                     logger.info(f"[SWITCH] L2->L1 | L1={count_l1} L2={count_l2} elapsed={elapsed_green:.1f}s")
                     await self._transition_to(TrafficState.L1_GREEN_L2_RED, reason="traffic_density")
+
+    async def _do_pedestrian_crossing(self):
+        """Turn both lanes red for PEDESTRIAN_HOLD_SECONDS then resume."""
+        self._pedestrian_phase_active = True
+        self._pre_pedestrian_state = self.current_state
+        self.signal_change_reason = "pedestrian_crossing"
+        logger.info("[PEDESTRIAN] Both lanes going RED for crossing")
+
+        self.current_state = TrafficState.L1_RED_L2_RED
+        self.serial.write(self.command_map[self.current_state])
+        await asyncio.sleep(PEDESTRIAN_HOLD_SECONDS)
+
+        # Resume whichever lane was green before
+        resume = self._pre_pedestrian_state
+        logger.info(f"[PEDESTRIAN] Crossing done — resuming {resume}")
+        # Use the amber-prepare step before going green again
+        if resume == TrafficState.L1_GREEN_L2_RED:
+            self.current_state = TrafficState.L1_AMBER_L2_RED
+            self.serial.write(self.command_map[self.current_state])
+            await asyncio.sleep(2.0)
+            self.current_state = TrafficState.L1_GREEN_L2_RED
+        else:
+            self.current_state = TrafficState.L1_RED_L2_AMBER
+            self.serial.write(self.command_map[self.current_state])
+            await asyncio.sleep(2.0)
+            self.current_state = TrafficState.L1_RED_L2_GREEN
+
+        self.serial.write(self.command_map[self.current_state])
+        self.phase_start_time = time.time()
+        self._pedestrian_phase_active = False
 
     async def _transition_to(self, target_state, *, reason: str = "traffic_density"):
         if target_state == TrafficState.L1_RED_L2_GREEN and self.current_state == TrafficState.L1_GREEN_L2_RED:

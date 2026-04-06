@@ -150,6 +150,34 @@ document.addEventListener("DOMContentLoaded", () => {
             ambSim && reason
                 ? `<p style="color:#88eeff">[${timestamp}] LAST_SIGNAL: ${reason}</p>`
                 : "";
+
+        // Update pedestrian panel
+        const pedPanel = document.getElementById("ped-panel");
+        const pedBar   = document.getElementById("ped-bar");
+        const pedLabel = document.getElementById("ped-count-label");
+        const pedStatus = document.getElementById("ped-status");
+        if (pedPanel && data.mode === "sim") {
+            pedPanel.style.display = "block";
+            const pct = data.pedestrian_threshold > 0
+                ? Math.round((data.pedestrian_count / data.pedestrian_threshold) * 100)
+                : 0;
+            pedBar.style.width = `${pct}%`;
+            pedBar.style.background = data.pedestrian_phase_active
+                ? "linear-gradient(90deg,#ff3333,#ff0000)"
+                : pct >= 100
+                ? "linear-gradient(90deg,#ffcc00,#ff6600)"
+                : "linear-gradient(90deg,#00ffcc,#00b3ff)";
+            pedLabel.innerText = `${data.pedestrian_count} / ${data.pedestrian_threshold}`;
+            pedStatus.innerText = data.pedestrian_phase_active
+                ? "🚦 CROSSING IN PROGRESS — both lanes RED"
+                : pct >= 100
+                ? "⚠️ Threshold reached — crossing queued"
+                : `Auto-accumulating every 3s`;
+            pedStatus.style.color = data.pedestrian_phase_active ? "#ff3333"
+                : pct >= 100 ? "#ffcc00" : "var(--text-muted)";
+        } else if (pedPanel) {
+            pedPanel.style.display = "none";
+        }
         let logBlock = "";
         if (data.logs && data.logs.length > 0) {
             logBlock = data.logs.slice(-8).map((log) => `<p class="log-line">${log}</p>`).join("");
@@ -246,3 +274,20 @@ window.spawnFiretruck = function(lane) {
         body: JSON.stringify({ lane: lane, spawn_firetruck: true })
     }).catch(err => console.error("Sim control error:", err));
 };
+
+window.pedAdd = function() {
+    fetch('/api/pedestrian_crossing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'add' })
+    }).catch(err => console.error("Pedestrian add error:", err));
+};
+
+window.pedTrigger = function() {
+    fetch('/api/pedestrian_crossing', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'trigger' })
+    }).catch(err => console.error("Pedestrian trigger error:", err));
+};
+
