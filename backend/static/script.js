@@ -96,7 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
         densityValL2.innerText = `${Math.round(data.l2_density)}%`;
         updateDensityColor(densityBarL2, data.l2_density);
         
-        // Update Lights (support both shapes: signals.l1.color or nested)
+        // Update Lights
         if (data.signals) {
             const c1 = data.signals.l1 && data.signals.l1.color;
             const c2 = data.signals.l2 && data.signals.l2.color;
@@ -107,20 +107,22 @@ document.addEventListener("DOMContentLoaded", () => {
         const card1 = document.getElementById("lane1-card");
         const card2 = document.getElementById("lane2-card");
         const ambSim = data.mode === "sim";
+
+        // Highlight card for any emergency vehicle (ambulance or firetruck)
         if (card1) {
             card1.classList.toggle(
                 "lane-ambulance-priority",
-                ambSim && Boolean(data.ambulance_l1)
+                ambSim && (Boolean(data.ambulance_l1) || Boolean(data.firetruck_l1))
             );
         }
         if (card2) {
             card2.classList.toggle(
                 "lane-ambulance-priority",
-                ambSim && Boolean(data.ambulance_l2)
+                ambSim && (Boolean(data.ambulance_l2) || Boolean(data.firetruck_l2))
             );
         }
         
-        // Update Data Stream (telemetry + optional serial / command log)
+        // Update Data Stream
         const timestamp = new Date().toISOString().split('T')[1].slice(0, 8);
         let serialLine = "";
         if (data.serial) {
@@ -138,7 +140,11 @@ document.addEventListener("DOMContentLoaded", () => {
                 : "";
         const amb =
             ambSim && (data.ambulance_l1 || data.ambulance_l2)
-                ? `<p style="color:#ff4499">[${timestamp}] AMB on screen: L1×${data.ambulance_count_l1 ?? 0} L2×${data.ambulance_count_l2 ?? 0}</p>`
+                ? `<p style="color:#ff4499">[${timestamp}] 🚑 AMB: L1×${data.ambulance_count_l1 ?? 0} L2×${data.ambulance_count_l2 ?? 0}</p>`
+                : "";
+        const ft =
+            ambSim && (data.firetruck_l1 || data.firetruck_l2)
+                ? `<p style="color:#ff6600">[${timestamp}] 🚒 FT:  L1×${data.firetruck_count_l1 ?? 0} L2×${data.firetruck_count_l2 ?? 0}</p>`
                 : "";
         const reasonLine =
             ambSim && reason
@@ -153,6 +159,7 @@ document.addEventListener("DOMContentLoaded", () => {
             <p>[${timestamp}] L1_V: ${data.l1_count} | L2_V: ${data.l2_count}</p>
             <p>[${timestamp}] C_ST: ${sig}</p>
             ${amb}
+            ${ft}
             ${reasonLine}
             ${logBlock}
         `;
@@ -229,5 +236,13 @@ window.spawnAmbulance = function(lane) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ lane: lane, spawn_ambulance: true })
+    }).catch(err => console.error("Sim control error:", err));
+};
+
+window.spawnFiretruck = function(lane) {
+    fetch('/api/sim_controls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lane: lane, spawn_firetruck: true })
     }).catch(err => console.error("Sim control error:", err));
 };
